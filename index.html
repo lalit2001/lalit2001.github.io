@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Interface</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.22.9/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+    const { useState, useEffect } = React;
+    const BASE_URL = 'http://a56c1224aa69644678202f3c3fa73530-786613870.eu-west-2.elb.amazonaws.com/api/v1/orchestrate';
+
+    const ChatInterface = () => {
+        const [apiKey, setApiKey] = useState(localStorage.getItem('apiKey') || '');
+        const [ledgerId, setLedgerId] = useState(localStorage.getItem('ledgerId') || '');
+        const [sessions, setSessions] = useState([]);
+        const [currentSession, setCurrentSession] = useState(null);
+        const [chatHistory, setChatHistory] = useState([]);
+        const [userQuery, setUserQuery] = useState('');
+        const [feedback, setFeedback] = useState({});
+        const [feedbackInput, setFeedbackInput] = useState({});
+        const [showFeedbackInput, setShowFeedbackInput] = useState({});
+        const [isSendingMessage, setIsSendingMessage] = useState(false);
+
+        // Save API Key and Ledger ID to localStorage
+        useEffect(() => {
+            localStorage.setItem('apiKey', apiKey);
+        }, [apiKey]);
+
+        useEffect(() => {
+            localStorage.setItem('ledgerId', ledgerId);
+        }, [ledgerId]);
+
+        // Fetch sessions
+        useEffect(() => {
+            if (ledgerId && apiKey) {
+                fetch(`${BASE_URL}/chat/sessions/${ledgerId}`, {
+                    headers: { 'x-api-key': apiKey }
+                })
+                    .then(res => res.json())
+                    .then(data => setSessions(data.sessions || []))
+                    .catch(err => console.error('Error fetching sessions:', err));
+            }
+        }, [ledgerId, apiKey]);
+
+        // Fetch chat history
+        useEffect(() => {
+            if (ledgerId && currentSession && apiKey) {
+                fetch(`${BASE_URL}/chat/history/${ledgerId}/${currentSession}`, {
+                    headers: { 'x-api-key': apiKey }
+                })
+                    .then(res => res.json())
+                    .then(data => setChatHistory(data.chat_history || []))
+                    .catch(err => console.error('Error fetching history:', err));
+            }
+        }, [ledgerId, currentSession, apiKey]);
+
+        const createNewSession = () => {
+            const newSessionId = Date.now().toString();
+            setCurrentSession(newSessionId);
+            setChatHistory([]);
+            setSessions([...sessions, newSessionId]);
+        };
+
+        const handleSendMessage = async () => {
+            if (!ledgerId || !userQuery || !currentSession || !apiKey) return;
+
+            setIsSendingMessage(true);
+            try {
+                const response = await fetch(`${BASE_URL}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': apiKey
+                    },
+                    body: JSON.stringify({
+                        ledger_account_id: ledgerId,
+                        user_query: userQuery,
+                        session_id: currentSession
+                    })
+                });
+                if (!response.ok) throw new Error('Failed to send message');
+                const data = await response.json();
+                setChatHistory([...chatHistory, {
+                    ledger_account_id: ledgerId,
+                    session_id: currentSession,
+                    user_query: userQuery,
+                    response: data,
+                    timestamp: new Date().toISOString()
+                }]);
+                setUserQuery('');
+            } catch (err) {
+                console.error('Error sending message:', err);
+            } finally {
+                setIsSendingMessage(false);
+            }
+        };
+
+        const toggleFeedbackInput = (query) => {
+            setShowFeedbackInput(prev => ({
+                ...prev,
+                [query]: !prev[query]
+            }));
+        };
+
+        const handleFeedback = async (query, aiResponse) => {
+            const feedbackMessage = feedbackInput[query] || '';
+            if (!feedbackMessage || !apiKey) return;
+
+            try {
+                await fetch(`${BASE_URL}/feedback`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': apiKey
+                    },
+                    body: JSON.stringify({
+                        query,
+                        aiResponse,
+                        feedback: feedbackMessage,
+                        ledger_id: ledgerId,
+                        session_id: currentSession
+                    })
+                });
+                setFeedback({ ...feedback, [query]: feedbackMessage });
+                setFeedbackInput({ ...feedbackInput, [query]: '' });
+                toggleFeedbackInput(query);
+            } catch (err) {
+                console.error('Error submitting feedback:', err);
+            }
+        };
+
+        return (
+            <div className="flex h-screen bg-gray-100">
+                {/* Sidebar */}
+                <div className="w-64 bg-white shadow-lg p-4">
+                    <h2 className="text-lg font-bold mb-4">Past Sessions</h2>
+                    <button
+                        onClick={createNewSession}
+                        className="w-full bg-blue-500 text-white p-2 rounded mb-4 hover:bg-blue-600"
+                        disabled={!ledgerId || !apiKey}
+                    >
+                        Create New Session
+                    </button>
+                    <ul className="space-y-2">
+                        {sessions.map(session => (
+                            <li
+                                key={session}
+                                onClick={() => setCurrentSession(session)}
+                                className={`p-2 rounded cursor-pointer ${currentSession === session ? 'bg-blue-100' : 'hover:bg-gray-100'}`}
+                            >
+                                Session {session}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+
+                {/* Main Chat Area */}
+                <div className="flex-1 flex flex-col">
+                    {/* API Key & Ledger ID Inputs */}
+                    <div className="bg-white p-4 shadow grid grid-cols-2 gap-4">
+                        <input
+                            type="text"
+                            placeholder="Enter API Key"
+                            value={apiKey}
+                            onChange={(e) => setApiKey(e.target.value)}
+                            className="p-2 border rounded"
+                        />
+                        <input
+                            type="text"
+                            placeholder="Enter Ledger Account ID"
+                            value={ledgerId}
+                            onChange={(e) => setLedgerId(e.target.value)}
+                            className="p-2 border rounded"
+                        />
+                    </div>
+
+                    {/* Chat Messages */}
+                    <div className="flex-1 p-4 overflow-y-auto">
+                        {ledgerId && apiKey ? (
+                            <>
+                                {isSendingMessage && (
+                                    <div className="flex justify-center items-center my-4">
+                                        <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
+                                    </div>
+                                )}
+                                {chatHistory.map((chat, index) => (
+                                    <div key={index} className="mb-4">
+                                        {/* User Message */}
+                                        <div className="flex justify-end items-start">
+                                            <div className="bg-blue-500 text-white p-3 rounded-lg max-w-md">
+                                                {chat.user_query}
+                                            </div>
+                                            <div className="ml-2">
+                                                <div className="w-8 h-8 rounded-full bg-blue-700 flex items-center justify-center text-white font-bold">
+                                                    U
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {/* AI Response */}
+                                        <div className="flex justify-start items-start mt-2">
+                                            <div className="mr-2">
+                                                <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold">
+                                                    AI
+                                                </div>
+                                            </div>
+                                            <div className="bg-gray-200 p-3 rounded-lg max-w-md">
+                                                {chat.response.display_type === 'text' && typeof chat.response.data === 'string' ? (
+                                                    <div dangerouslySetInnerHTML={{ __html: marked.parse(chat.response.data) }} />
+                                                ) : (
+                                                    <div>{typeof chat.response.data === 'string' ? chat.response.data : JSON.stringify(chat.response.data)}</div>
+                                                )}
+                                                {/* Feedback */}
+                                                <div className="mt-2">
+                                                    <button
+                                                        onClick={() => toggleFeedbackInput(chat.user_query)}
+                                                        className="p-1 text-gray-500 hover:text-blue-500"
+                                                    >
+                                                        💬 Feedback
+                                                    </button>
+                                                    {showFeedbackInput[chat.user_query] && (
+                                                        <div className="mt-2 flex">
+                                                            <input
+                                                                type="text"
+                                                                placeholder="Enter feedback..."
+                                                                value={feedbackInput[chat.user_query] || ''}
+                                                                onChange={(e) => setFeedbackInput({
+                                                                    ...feedbackInput,
+                                                                    [chat.user_query]: e.target.value
+                                                                })}
+                                                                className="flex-1 p-2 border rounded-l"
+                                                            />
+                                                            <button
+                                                                onClick={() => handleFeedback(chat.user_query, chat.response.data)}
+                                                                className="bg-blue-500 text-white p-2 rounded-r hover:bg-blue-600"
+                                                            >
+                                                                Submit
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                    {feedback[chat.user_query] && (
+                                                        <div className="mt-2 text-sm text-gray-600">
+                                                            Feedback: {feedback[chat.user_query]}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </>
+                        ) : (
+                            <div className="text-gray-500 text-center">Please enter API Key and Ledger Account ID to start</div>
+                        )}
+                    </div>
+
+                    {/* Chat Input */}
+                    <div className="bg-white p-4 shadow flex">
+                        <input
+                            type="text"
+                            placeholder="Type your message..."
+                            value={userQuery}
+                            onChange={(e) => setUserQuery(e.target.value)}
+                            className="flex-1 p-2 border rounded-l"
+                            disabled={!ledgerId || !currentSession || !apiKey}
+                        />
+                        <button
+                            onClick={handleSendMessage}
+                            className="bg-blue-500 text-white p-2 rounded-r hover:bg-blue-600"
+                            disabled={!ledgerId || !currentSession || isSendingMessage || !apiKey}
+                        >
+                            {isSendingMessage ? 'Sending...' : 'Send'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    ReactDOM.render(<ChatInterface />, document.getElementById('root'));
+</script>
+</body>
+</html>
